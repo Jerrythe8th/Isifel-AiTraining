@@ -19,3 +19,27 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## License
+
+The Isifel source code is licensed under the MIT License.
+
+## Third-Party Models
+
+Isifel uses third-party AI models that are licensed separately from the Isifel source code:
+
+* **Qwen2.5-1.5B-Instruct** — Apache License 2.0
+* **Stable Diffusion v1.5** — CreativeML OpenRAIL-M
+* **CogVideoX-5B-I2V** — CogVideoX License
+
+The third-party model licenses apply to their respective models and are separate from the MIT License covering the Isifel source code. Please review the applicable model licenses before using, redistributing, or deploying those models.
+
+CogVideoX-5B, including its image-to-video (I2V) model, is provided under the CogVideoX License. The license permits academic research use and has additional requirements for commercial use, including obtaining the applicable commercial license from the CogVideoX model team.
+
+## Development Assistance
+
+ChatGPT was used as development assistance during the creation of Isifel. This attribution does not grant or replace any software license for the Isifel source code or any third-party models.
+
+## Third-Party License Notices
+
+Applicable third-party license texts and notices are provided separately in this repository where required.
