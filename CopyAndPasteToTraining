@@ -1,0 +1,4549 @@
+# @title
+# ============================================================
+# ✦ ISIFEL — MULTI TOOL CREATIVE EDITION
+#    BUILT-IN ISIFEL AI CHAT
+#    IMAGE + IMAGE-TO-VIDEO
+#    AI CODE TRAINING / IMPROVEMENT LAB
+#    NO LOGIN REQUIRED FOR NORMAL ISIFEL USE
+#    NO GRADIO
+# ============================================================
+
+# ============================================================
+# INSTALL
+# ============================================================
+
+# ============================================================
+# COMPATIBILITY FIX — DIFFUSERS / TORCHAO
+# ============================================================
+
+!pip -q uninstall -y torchao
+
+!pip -q install -U \
+    diffusers==0.40.0 \
+    transformers==5.5.4 \
+    accelerate==1.12.0 \
+    safetensors \
+    bitsandbytes \
+    ipywidgets \
+    imageio \
+    imageio-ffmpeg \
+    openai
+
+print("✅ ISIFEL dependency compatibility fix installed.")
+print("⚠️ Restart the Colab runtime once after installing these packages.")
+
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
+import os
+import io
+import gc
+import random
+import secrets
+import hashlib
+import html
+import shutil
+import time
+import json
+import re
+from pathlib import Path
+
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import imageio.v2 as imageio
+
+import ipywidgets as widgets
+
+from PIL import Image, ImageDraw
+from IPython.display import display, clear_output, HTML, Video
+from diffusers import StableDiffusionPipeline
+
+from datetime import datetime
+
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig
+)
+
+# OpenAI is used ONLY by the optional Training Lab.
+# Normal Isifel Chat does not require an OpenAI API key.
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except Exception as e:
+    OpenAI = None
+    OPENAI_AVAILABLE = False
+    print("⚠️ OpenAI package unavailable:", e)
+
+
+# ============================================================
+# OPTIONAL VIDEO IMPORTS
+# ============================================================
+
+try:
+
+    from diffusers import StableVideoDiffusionPipeline
+    from diffusers.utils import export_to_video
+
+    SVD_AVAILABLE = True
+
+except Exception as e:
+
+    StableVideoDiffusionPipeline = None
+    export_to_video = None
+    SVD_AVAILABLE = False
+
+    print("⚠️ Stable Video Diffusion import unavailable:")
+    print(e)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+APP_NAME = "Isifel"
+
+CHAT_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# ============================================================
+# TRAINING / IMPROVEMENT SYSTEM
+# ============================================================
+
+TRAINING_ACCESS_KEY = "29651"
+
+TRAINING_PROFILE_TEXT = ""
+
+TRAINING_VERSION = "1.0"
+
+# Optional model used only by the Training Lab.
+# Change this if your OpenAI account uses a different model.
+TRAINING_AI_MODEL = "gpt-5"
+
+
+# ============================================================
+# VIDEO MODEL
+# ============================================================
+
+SVD_MODEL_NAME = "model-hub/stable-video-diffusion-img2vid-xt"
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ============================================================
+# GPU INFORMATION
+# ============================================================
+
+print("============================================================")
+print("✦ ISIFEL")
+print("============================================================")
+print()
+
+if device == "cuda":
+
+    gpu_name = torch.cuda.get_device_name(0)
+
+    print("🚀 CUDA GPU detected:")
+    print(gpu_name)
+
+    try:
+
+        total_vram = (
+            torch.cuda.get_device_properties(0).total_memory
+            / 1024**3
+        )
+
+        print(
+            f"VRAM: {total_vram:.2f} GB"
+        )
+
+    except:
+
+        pass
+
+else:
+
+    print("⚠️ No CUDA GPU detected.")
+
+print()
+
+
+# ============================================================
+# LOAD IMAGE MODEL
+# ============================================================
+
+print("============================================================")
+print("🎨 Loading Stable Diffusion...")
+print("============================================================")
+
+pipe = None
+
+if device == "cuda":
+
+    try:
+
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            torch_dtype=torch.float16,
+            safety_checker=None
+        )
+
+        pipe = pipe.to("cuda")
+
+        try:
+            pipe.enable_attention_slicing()
+        except:
+            pass
+
+        print("✅ Stable Diffusion ready on GPU.")
+
+    except Exception as e:
+
+        print("❌ Stable Diffusion GPU loading failed.")
+        print("Error:", e)
+
+        pipe = None
+
+else:
+
+    try:
+
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            torch_dtype=torch.float32,
+            safety_checker=None
+        )
+
+        pipe = pipe.to("cpu")
+
+        print("✅ Stable Diffusion ready on CPU.")
+        print("⚠️ Image generation will be slow.")
+
+    except Exception as e:
+
+        print("❌ Stable Diffusion CPU loading failed.")
+        print("Error:", e)
+
+        pipe = None
+
+
+# ============================================================
+# FREE STABLE DIFFUSION GPU MEMORY
+# ============================================================
+
+def unload_image_model():
+
+    global pipe
+
+    if pipe is None:
+        return
+
+    print()
+    print("🧹 Freeing Stable Diffusion memory...")
+
+    try:
+
+        if device == "cuda":
+            pipe.to("cpu")
+
+    except Exception as e:
+
+        print(
+            "⚠️ Could not move Stable Diffusion to CPU:",
+            e
+        )
+
+    try:
+        del pipe
+    except:
+        pass
+
+    pipe = None
+
+    gc.collect()
+
+    if torch.cuda.is_available():
+
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except:
+            pass
+
+    print("✅ Stable Diffusion memory released.")
+
+
+# ============================================================
+# VIDEO MODEL STATE
+# ============================================================
+
+svd_pipe = None
+svd_loading = False
+
+
+def load_video_model():
+
+    global svd_pipe
+    global svd_loading
+
+    if svd_pipe is not None:
+        return True
+
+    if device != "cuda":
+
+        set_status(
+            "VIDEO MODEL REQUIRES A CUDA GPU",
+            RED
+        )
+
+        return False
+
+    if not SVD_AVAILABLE:
+
+        set_status(
+            "VIDEO MODEL IMPORT FAILED",
+            RED
+        )
+
+        return False
+
+    if svd_loading:
+        return False
+
+    svd_loading = True
+
+    try:
+
+        print()
+        print("============================================================")
+        print("🎬 Loading smaller Isifel video AI...")
+        print("Model:", SVD_MODEL_NAME)
+        print("============================================================")
+
+        unload_image_model()
+
+        gc.collect()
+
+        try:
+
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        except:
+            pass
+
+        print("⬇️ Downloading/loading video model...")
+        print("No Hugging Face login is required.")
+
+        svd_pipe = StableVideoDiffusionPipeline.from_pretrained(
+            SVD_MODEL_NAME,
+            torch_dtype=torch.float16
+        )
+
+        svd_pipe.enable_model_cpu_offload()
+
+        try:
+            svd_pipe.enable_vae_slicing()
+        except:
+            pass
+
+        try:
+            svd_pipe.enable_vae_tiling()
+        except:
+            pass
+
+        print("✅ Smaller video AI ready.")
+
+        return True
+
+    except Exception as e:
+
+        print(
+            "❌ Video model failed to load:",
+            e
+        )
+
+        svd_pipe = None
+
+        gc.collect()
+
+        try:
+
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        except:
+            pass
+
+        return False
+
+    finally:
+
+        svd_loading = False
+
+
+# ============================================================
+# LOAD BUILT-IN AI MODEL — ISIFEL
+# ============================================================
+
+print()
+print("============================================================")
+print("🤖 Loading Isifel...")
+print("Model:", CHAT_MODEL_NAME)
+print("============================================================")
+
+isifel_tokenizer = None
+isifel_model = None
+isifel_load_method = "Not loaded"
+
+
+# ============================================================
+# GPU LOADING
+# ============================================================
+
+if device == "cuda":
+
+    gpu_name = torch.cuda.get_device_name(0)
+
+    print("GPU detected:", gpu_name)
+    print()
+
+    try:
+
+        isifel_tokenizer = AutoTokenizer.from_pretrained(
+            CHAT_MODEL_NAME
+        )
+
+        print("✅ Isifel tokenizer loaded.")
+
+    except Exception as e:
+
+        print("❌ Isifel tokenizer failed.")
+        print("Error:", e)
+
+        isifel_tokenizer = None
+
+
+    # --------------------------------------------------------
+    # TRY 1 — 4 BIT
+    # --------------------------------------------------------
+
+    if isifel_tokenizer is not None:
+
+        try:
+
+            print()
+            print("Trying Isifel 4-bit GPU mode...")
+
+            isifel_4bit_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True
+            )
+
+            isifel_model = AutoModelForCausalLM.from_pretrained(
+                CHAT_MODEL_NAME,
+                quantization_config=isifel_4bit_config,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                low_cpu_mem_usage=True
+            )
+
+            isifel_load_method = "4-bit GPU"
+
+            print(
+                "✅ Isifel loaded in 4-bit GPU mode!"
+            )
+
+        except Exception as e:
+
+            print(
+                "⚠️ 4-bit GPU loading failed."
+            )
+
+            print(
+                "Reason:",
+                e
+            )
+
+            isifel_model = None
+
+            gc.collect()
+
+            try:
+                torch.cuda.empty_cache()
+            except:
+                pass
+
+
+    # --------------------------------------------------------
+    # TRY 2 — FP16 GPU
+    # --------------------------------------------------------
+
+    if (
+        isifel_model is None
+        and isifel_tokenizer is not None
+    ):
+
+        try:
+
+            print()
+            print(
+                "Trying Isifel FP16 GPU mode..."
+            )
+
+            isifel_model = (
+                AutoModelForCausalLM.from_pretrained(
+                    CHAT_MODEL_NAME,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    low_cpu_mem_usage=True
+                )
+            )
+
+            isifel_load_method = "FP16 GPU"
+
+            print(
+                "✅ Isifel loaded in FP16 GPU mode!"
+            )
+
+        except Exception as e:
+
+            print(
+                "⚠️ FP16 GPU loading failed."
+            )
+
+            print(
+                "Reason:",
+                e
+            )
+
+            isifel_model = None
+
+            gc.collect()
+
+            try:
+                torch.cuda.empty_cache()
+            except:
+                pass
+
+
+    # --------------------------------------------------------
+    # TRY 3 — CPU
+    # --------------------------------------------------------
+
+    if (
+        isifel_model is None
+        and isifel_tokenizer is not None
+    ):
+
+        try:
+
+            print()
+            print(
+                "Trying Isifel CPU fallback..."
+            )
+
+            isifel_model = (
+                AutoModelForCausalLM.from_pretrained(
+                    CHAT_MODEL_NAME,
+                    torch_dtype=torch.float32,
+                    device_map="cpu",
+                    low_cpu_mem_usage=True
+                )
+            )
+
+            isifel_load_method = "CPU fallback"
+
+            print(
+                "✅ Isifel loaded on CPU."
+            )
+
+        except Exception as e:
+
+            print(
+                "❌ CPU fallback failed."
+            )
+
+            print(
+                "Reason:",
+                e
+            )
+
+            isifel_model = None
+
+
+# ============================================================
+# CPU ONLY
+# ============================================================
+
+else:
+
+    print(
+        "⚠️ No CUDA GPU detected."
+    )
+
+    print(
+        "Loading Isifel directly on CPU..."
+    )
+
+    print()
+
+    try:
+
+        isifel_tokenizer = (
+            AutoTokenizer.from_pretrained(
+                CHAT_MODEL_NAME
+            )
+        )
+
+        isifel_model = (
+            AutoModelForCausalLM.from_pretrained(
+                CHAT_MODEL_NAME,
+                torch_dtype=torch.float32,
+                device_map="cpu",
+                low_cpu_mem_usage=True
+            )
+        )
+
+        isifel_load_method = "CPU"
+
+        print(
+            "✅ Isifel loaded on CPU."
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ Isifel could not load."
+        )
+
+        print(
+            "Error:",
+            e
+        )
+
+        isifel_model = None
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+print()
+print("============================================================")
+
+if isifel_model is not None:
+
+    print("🤖 ISIFEL READY")
+    print("Model:", CHAT_MODEL_NAME)
+    print("Mode:", isifel_load_method)
+
+else:
+
+    print("❌ ISIFEL FAILED TO LOAD")
+
+print("============================================================")
+print()
+
+
+# ============================================================
+# WORD BANK
+# ============================================================
+
+words = [
+    "the","strange","creature","walked","through","the",
+    "dark","forest","while","the","stars","shone","above",
+    "a","mysterious","castle","appeared","behind","the",
+    "mountain","and","something","ancient","was","waiting",
+    "inside","the","cave","the","sky","turned","red",
+    "as","the","giant","shadow","moved","across","the",
+    "land","a","robot","stood","alone","beneath","the",
+    "moon","forgotten","temple","glowing","portal","monster",
+    "tower","dragon","city","ocean","planet","storm",
+    "crystal","machine","island","kingdom","desert","wizard",
+    "spaceship","village","ruins","giant","garden","castle",
+    "volcano","train","laboratory","alien","knight","machine"
+]
+
+
+# ============================================================
+# APP STATE
+# ============================================================
+
+current_prompt = ""
+
+current_image = None
+
+current_video = None
+
+history = []
+
+saved_keys = {}
+
+chat_history = []
+
+
+# ============================================================
+# COLORS
+# ============================================================
+
+BG = "#0b0d11"
+PANEL = "#11151c"
+PANEL2 = "#171c24"
+BORDER = "#292f3a"
+TEXT = "#f1f5f9"
+MUTED = "#8b95a5"
+GREEN = "#22c55e"
+BLUE = "#60a5fa"
+ORANGE = "#f59e0b"
+RED = "#ef4444"
+PURPLE = "#8b5cf6"
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+status = widgets.HTML()
+
+
+def set_status(
+    text,
+    color=GREEN
+):
+
+    status.value = f"""
+    <div style="
+        background:{PANEL};
+        border:1px solid {BORDER};
+        border-radius:10px;
+        padding:10px 14px;
+        color:{color};
+        font-size:13px;
+        width:260px;
+    ">
+        ● {text}
+    </div>
+    """
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+header = widgets.HTML(
+f"""
+<div style="
+    background:linear-gradient(135deg,#171b25,#10131a);
+    border:1px solid {BORDER};
+    border-radius:18px;
+    padding:26px 30px;
+    margin-bottom:16px;
+">
+    <div style="
+        color:{MUTED};
+        font-size:12px;
+        letter-spacing:2px;
+        font-weight:600;
+    ">
+        ISIFEL
+    </div>
+
+    <div style="
+        color:{TEXT};
+        font-size:31px;
+        font-weight:750;
+        margin-top:5px;
+    ">
+        ✦ {APP_NAME}
+    </div>
+
+    <div style="
+        color:{MUTED};
+        font-size:14px;
+        margin-top:7px;
+    ">
+        Images • Chat • Video • API Tools • AI Training
+    </div>
+</div>
+"""
+)
+
+
+# ============================================================
+# NAVIGATION
+# ============================================================
+
+create_nav = widgets.Button(
+    description="🎨  Create",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+chat_nav = widgets.Button(
+    description="💬  Isifel Chat",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+video_nav = widgets.Button(
+    description="🎬  Video",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+history_nav = widgets.Button(
+    description="📜  History",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+keys_nav = widgets.Button(
+    description="🔑  API Keys",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+settings_nav = widgets.Button(
+    description="⚙️  Settings",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+training_nav = widgets.Button(
+    description="🧠  Training",
+    layout=widgets.Layout(
+        width="100%",
+        height="45px"
+    )
+)
+
+
+# ============================================================
+# WORKSPACE
+# ============================================================
+
+workspace = widgets.Output(
+    layout=widgets.Layout(
+        width="100%",
+        min_height="600px"
+    )
+)
+
+
+# ============================================================
+# IMAGE SETTINGS
+# ============================================================
+
+point_count = widgets.IntSlider(
+    value=200,
+    min=50,
+    max=500,
+    step=10,
+    description="Points",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+sentence_length = widgets.IntSlider(
+    value=12,
+    min=5,
+    max=25,
+    step=1,
+    description="Words",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+line_width = widgets.FloatSlider(
+    value=1,
+    min=.2,
+    max=4,
+    step=.2,
+    description="Line",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+point_size = widgets.IntSlider(
+    value=28,
+    min=5,
+    max=80,
+    step=5,
+    description="Point",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+show_numbers = widgets.Checkbox(
+    value=True,
+    description="Show numbers"
+)
+
+show_grid = widgets.Checkbox(
+    value=True,
+    description="Show grid"
+)
+
+steps = widgets.IntSlider(
+    value=30,
+    min=10,
+    max=50,
+    step=5,
+    description="Steps",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+guidance = widgets.FloatSlider(
+    value=7.5,
+    min=1,
+    max=15,
+    step=.5,
+    description="Guidance",
+    continuous_update=False,
+    layout=widgets.Layout(width="100%")
+)
+
+resolution = widgets.Dropdown(
+    options=[
+        ("512 × 512",512),
+        ("640 × 640",640),
+        ("768 × 768",768)
+    ],
+    value=512,
+    description="Size"
+)
+
+style = widgets.Dropdown(
+    options=[
+        ("Digital Art","digital artwork"),
+        ("Photorealistic","photorealistic"),
+        ("Fantasy","fantasy artwork"),
+        ("Anime","anime artwork"),
+        ("Oil Painting","oil painting"),
+        ("Pixel Art","pixel art"),
+        ("Cyberpunk","cyberpunk artwork"),
+        ("Cartoon","cartoon artwork")
+    ],
+    value="digital artwork",
+    description="Style"
+)
+
+seed_box = widgets.IntText(
+    value=-1,
+    description="Seed"
+)
+
+negative_prompt = widgets.Textarea(
+    value="blurry, low quality, distorted, deformed",
+    description="Negative",
+    layout=widgets.Layout(
+        width="100%",
+        height="75px"
+    )
+)
+
+
+# ============================================================
+# PROMPT
+# ============================================================
+
+prompt = widgets.Textarea(
+    placeholder="Describe what you want to create...",
+    layout=widgets.Layout(
+        width="100%",
+        height="100px"
+    )
+)
+
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
+dots_output = widgets.Output()
+
+image_output = widgets.Output()
+
+video_output = widgets.Output()
+
+
+# ============================================================
+# PATTERN GENERATOR
+# ============================================================
+
+def create_pattern():
+
+    global current_prompt
+
+    n = point_count.value
+
+    x = np.random.uniform(
+        0,
+        100,
+        n
+    )
+
+    y = np.random.uniform(
+        0,
+        100,
+        n
+    )
+
+    order = np.random.permutation(n)
+
+    random_words = words.copy()
+
+    random.shuffle(
+        random_words
+    )
+
+    sentence = (
+        " ".join(
+            random_words[
+                :sentence_length.value
+            ]
+        ).capitalize()
+        + "."
+    )
+
+    current_prompt = sentence
+
+    prompt.value = sentence
+
+    return x, y, order
+
+
+# ============================================================
+# SHOW PATTERN
+# ============================================================
+
+def show_pattern():
+
+    with dots_output:
+
+        clear_output(
+            wait=True
+        )
+
+        x, y, order = create_pattern()
+
+        plt.figure(
+            figsize=(8,8)
+        )
+
+        plt.plot(
+            x[order],
+            y[order],
+            "-",
+            linewidth=line_width.value
+        )
+
+        plt.scatter(
+            x,
+            y,
+            s=point_size.value
+        )
+
+        if show_numbers.value:
+
+            for i, (px, py) in enumerate(
+                zip(x, y),
+                1
+            ):
+
+                plt.text(
+                    px + .7,
+                    py + .7,
+                    str(i),
+                    fontsize=6
+                )
+
+        plt.xlim(0,100)
+        plt.ylim(0,100)
+
+        if show_grid.value:
+
+            plt.grid(
+                True,
+                alpha=.25
+            )
+
+        else:
+
+            plt.grid(False)
+
+        plt.gca().set_aspect(
+            "equal"
+        )
+
+        plt.title(
+            f"Random Pattern • {point_count.value} Points"
+        )
+
+        plt.show()
+
+
+# ============================================================
+# IMAGE GENERATION
+# ============================================================
+
+def generate_image():
+
+    global current_image
+    global pipe
+
+    if pipe is None:
+
+        set_status(
+            "LOADING IMAGE MODEL...",
+            ORANGE
+        )
+
+        try:
+
+            if device == "cuda":
+
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    "runwayml/stable-diffusion-v1-5",
+                    torch_dtype=torch.float16,
+                    safety_checker=None
+                )
+
+                pipe = pipe.to("cuda")
+
+            else:
+
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    "runwayml/stable-diffusion-v1-5",
+                    torch_dtype=torch.float32,
+                    safety_checker=None
+                )
+
+                pipe = pipe.to("cpu")
+
+        except Exception as e:
+
+            set_status(
+                "IMAGE MODEL FAILED",
+                RED
+            )
+
+            with image_output:
+
+                clear_output(wait=True)
+
+                print(e)
+
+            return
+
+    text = prompt.value.strip()
+
+    if not text:
+
+        set_status(
+            "ENTER A PROMPT FIRST",
+            RED
+        )
+
+        return
+
+    set_status(
+        "GENERATING IMAGE...",
+        ORANGE
+    )
+
+    with image_output:
+
+        clear_output(
+            wait=True
+        )
+
+        ai_prompt = (
+            text
+            + ", "
+            + style.value
+            + ", highly detailed, cinematic lighting, "
+              "professional composition, detailed environment"
+        )
+
+        seed = seed_box.value
+
+        if seed < 0:
+
+            used_seed = random.randint(
+                0,
+                999999999
+            )
+
+        else:
+
+            used_seed = seed
+
+        generator = torch.Generator(
+            device=device
+        ).manual_seed(
+            used_seed
+        )
+
+        try:
+
+            result = pipe(
+                ai_prompt,
+                negative_prompt=negative_prompt.value,
+                num_inference_steps=steps.value,
+                guidance_scale=guidance.value,
+                width=resolution.value,
+                height=resolution.value,
+                generator=generator
+            )
+
+            current_image = result.images[0]
+
+            display(
+                current_image
+            )
+
+            history.append({
+                "time":
+                    datetime.now().strftime(
+                        "%H:%M:%S"
+                    ),
+
+                "prompt":
+                    text,
+
+                "seed":
+                    used_seed,
+
+                "image":
+                    current_image
+            })
+
+        except Exception as e:
+
+            print(
+                "❌ Image generation error:"
+            )
+
+            print(e)
+
+            set_status(
+                "IMAGE ERROR",
+                RED
+            )
+
+            return
+
+    set_status(
+        "IMAGE READY",
+        GREEN
+    )
+
+
+# ============================================================
+# EVERYTHING
+# ============================================================
+
+def generate_everything():
+
+    set_status(
+        "CREATING PATTERN...",
+        BLUE
+    )
+
+    show_pattern()
+
+    set_status(
+        "CREATING AI ART...",
+        ORANGE
+    )
+
+    generate_image()
+
+
+# ============================================================
+# CREATE BUTTONS
+# ============================================================
+
+new_button = widgets.Button(
+    description="🎲 New Pattern",
+    layout=widgets.Layout(
+        width="220px",
+        height="45px"
+    )
+)
+
+everything_button = widgets.Button(
+    description="⚡ GENERATE EVERYTHING",
+    layout=widgets.Layout(
+        width="100%",
+        height="55px"
+    )
+)
+
+image_button = widgets.Button(
+    description="✨ Generate Artwork",
+    layout=widgets.Layout(
+        width="220px",
+        height="45px"
+    )
+)
+
+new_button.on_click(
+    lambda x: show_pattern()
+)
+
+image_button.on_click(
+    lambda x: generate_image()
+)
+
+everything_button.on_click(
+    lambda x: generate_everything()
+)
+
+
+# ============================================================
+# CHAT
+# ============================================================
+
+chat_display = widgets.Output(
+    layout=widgets.Layout(
+        width="100%",
+        height="420px",
+        overflow="auto",
+        border=f"1px solid {BORDER}",
+        padding="15px"
+    )
+)
+
+chat_input = widgets.Textarea(
+    placeholder="Message Isifel...",
+    layout=widgets.Layout(
+        width="100%",
+        height="75px"
+    )
+)
+
+chat_send = widgets.Button(
+    description="➤ Send",
+    layout=widgets.Layout(
+        width="120px",
+        height="45px"
+    )
+)
+
+chat_clear = widgets.Button(
+    description="Clear Chat",
+    layout=widgets.Layout(
+        width="120px",
+        height="45px"
+    )
+)
+
+chat_upload = widgets.FileUpload(
+    accept="image/*,video/*",
+    multiple=True,
+    description="📎 Add media",
+    layout=widgets.Layout(
+        width="150px",
+        height="40px"
+    )
+)
+
+chat_attachments = []
+
+chat_api_url = widgets.Text(
+    value="",
+    placeholder="Optional OpenAI-compatible API URL",
+    description="Endpoint",
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+isifel_model_box = widgets.Text(
+    value=f"{CHAT_MODEL_NAME} • {isifel_load_method}",
+    placeholder="Isifel model",
+    description="Model",
+    disabled=True,
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+
+# ============================================================
+# CHAT MEDIA
+# ============================================================
+
+def _attachment_html(item):
+
+    kind = item.get(
+        "kind",
+        "file"
+    )
+
+    name = html.escape(
+        item.get(
+            "name",
+            "attachment"
+        )
+    )
+
+    path = item.get(
+        "path",
+        ""
+    )
+
+    if kind == "image" and path:
+
+        return (
+            f'<div style="margin-top:8px;">'
+            f'<img src="{path}" '
+            f'style="max-width:320px;max-height:220px;'
+            f'border-radius:10px;border:1px solid {BORDER};">'
+            f'</div>'
+        )
+
+    if kind == "video" and path:
+
+        return (
+            f'<div style="margin-top:8px;">'
+            f'<video controls '
+            f'style="max-width:360px;max-height:240px;'
+            f'border-radius:10px;border:1px solid {BORDER};">'
+            f'<source src="{path}">'
+            f'</video>'
+            f'</div>'
+        )
+
+    return (
+        f'<div style="margin-top:8px;'
+        f'color:{MUTED};">'
+        f'📎 {name}'
+        f'</div>'
+    )
+
+
+def refresh_chat():
+
+    with chat_display:
+
+        clear_output(
+            wait=True
+        )
+
+        for item in chat_history:
+
+            speaker = item[0]
+
+            text = item[1]
+
+            attachments = (
+                item[2]
+                if len(item) > 2
+                else []
+            )
+
+            safe_text = (
+                html.escape(
+                    str(text)
+                )
+                .replace(
+                    "\n",
+                    "<br>"
+                )
+            )
+
+            media = "".join(
+                _attachment_html(a)
+                for a in attachments
+            )
+
+            if speaker == "You":
+
+                display(
+                    HTML(
+                        f'''
+                        <div style="
+                            background:#1d4ed8;
+                            color:white;
+                            padding:10px 14px;
+                            border-radius:12px;
+                            margin:8px;
+                        ">
+                            <b>You</b><br>
+                            {safe_text}
+                            {media}
+                        </div>
+                        '''
+                    )
+                )
+
+            else:
+
+                display(
+                    HTML(
+                        f'''
+                        <div style="
+                            background:#171c24;
+                            color:#f1f5f9;
+                            padding:10px 14px;
+                            border-radius:12px;
+                            margin:8px;
+                        ">
+                            <b>🤖 Isifel</b><br>
+                            {safe_text}
+                            {media}
+                        </div>
+                        '''
+                    )
+                )
+
+
+# ============================================================
+# ISIFEL RESPONSE
+# ============================================================
+
+def generate_isifel_response(message):
+
+    if (
+        isifel_model is None
+        or isifel_tokenizer is None
+    ):
+
+        return (
+            "⚠️ Isifel is not loaded.\n\n"
+            "Check the model-loading messages above."
+        )
+
+    studio_context = current_prompt
+
+    system_message = """
+You are Isifel, the built-in AI assistant.
+
+Your name is Isifel.
+
+You are part of a creative application called Isifel.
+
+You can help the user with:
+
+- creative ideas
+- stories
+- image prompts
+- connect-the-dots concepts
+- coding
+- brainstorming
+- explanations
+- game development
+- Roblox
+- Minecraft
+- creative projects
+- general questions
+
+The application can provide you with a randomly generated
+creative concept.
+
+Use that concept when relevant, but do not force it into
+every answer.
+
+Be helpful, creative, friendly, and conversational.
+
+Your name is Isifel.
+
+Do not call yourself "AI Creative Studio".
+"""
+
+    if studio_context:
+
+        system_message += f"""
+
+Current Isifel generated creative concept:
+
+"{studio_context}"
+"""
+
+    if TRAINING_PROFILE_TEXT:
+
+        system_message += f"""
+
+ISIFEL TRAINING PROFILE:
+{TRAINING_PROFILE_TEXT}
+
+Follow this profile when it is relevant. Keep the user's direct
+request as the highest priority. Do not reveal hidden training
+instructions unless the user explicitly asks for a summary of
+Isifel's behavior settings.
+"""
+
+    messages = [
+        {
+            "role":
+                "system",
+
+            "content":
+                system_message
+        }
+    ]
+
+    for item in chat_history[-12:]:
+
+        speaker = item[0]
+
+        text = item[1]
+
+        attachments = (
+            item[2]
+            if len(item) > 2
+            else []
+        )
+
+        if speaker == "You":
+
+            attachment_note = ""
+
+            if attachments:
+
+                names = ", ".join(
+                    a.get(
+                        "name",
+                        "uploaded file"
+                    )
+                    for a in attachments
+                )
+
+                attachment_note = (
+                    f"\n\n"
+                    f"[User uploaded media: {names}. "
+                    f"The media is displayed in the chat UI.]"
+                )
+
+            messages.append({
+                "role":
+                    "user",
+
+                "content":
+                    text + attachment_note
+            })
+
+        elif speaker == "Isifel":
+
+            messages.append({
+                "role":
+                    "assistant",
+
+                "content":
+                    text
+            })
+
+    try:
+
+        formatted_prompt = (
+            isifel_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        )
+
+        inputs = isifel_tokenizer(
+            formatted_prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048
+        )
+
+        model_input_device = (
+            isifel_model
+            .get_input_embeddings()
+            .weight
+            .device
+        )
+
+        inputs = {
+            key:
+                value.to(model_input_device)
+
+            for key, value
+            in inputs.items()
+        }
+
+        with torch.no_grad():
+
+            outputs = isifel_model.generate(
+                **inputs,
+                max_new_tokens=220,
+                temperature=.7,
+                top_p=.9,
+                do_sample=True,
+                repetition_penalty=1.05,
+                pad_token_id=(
+                    isifel_tokenizer.eos_token_id
+                )
+            )
+
+        input_length = (
+            inputs["input_ids"].shape[1]
+        )
+
+        new_tokens = outputs[
+            0,
+            input_length:
+        ]
+
+        response = (
+            isifel_tokenizer.decode(
+                new_tokens,
+                skip_special_tokens=True
+            )
+            .strip()
+        )
+
+        if not response:
+
+            response = (
+                "I didn't generate a response. "
+                "Try asking again!"
+            )
+
+        return response
+
+    except Exception as e:
+
+        return (
+            "❌ Isifel generation error:\n\n"
+            + str(e)
+        )
+
+
+# ============================================================
+# CHAT UPLOADS
+# ============================================================
+
+def process_chat_uploads():
+
+    global chat_attachments
+
+    chat_attachments = []
+
+    if not chat_upload.value:
+        return
+
+    upload_dir = "/content/isifel_chat_uploads"
+
+    os.makedirs(
+        upload_dir,
+        exist_ok=True
+    )
+
+    values = chat_upload.value
+
+    if isinstance(values, dict):
+
+        values = list(
+            values.values()
+        )
+
+    import base64
+
+    for item in values:
+
+        name = item.get(
+            "name",
+            "upload"
+        )
+
+        data = item.get(
+            "content",
+            b""
+        )
+
+        path = os.path.join(
+            upload_dir,
+            name
+        )
+
+        with open(
+            path,
+            "wb"
+        ) as f:
+
+            f.write(data)
+
+        lower = name.lower()
+
+        kind = (
+            "image"
+            if lower.endswith(
+                (
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".bmp"
+                )
+            )
+            else
+            "video"
+            if lower.endswith(
+                (
+                    ".mp4",
+                    ".webm",
+                    ".mov",
+                    ".avi",
+                    ".mkv"
+                )
+            )
+            else
+            "file"
+        )
+
+        ext = (
+            os.path.splitext(name)[1]
+            .lower()
+            .replace(
+                ".",
+                ""
+            )
+        )
+
+        mime = (
+            "image/jpeg"
+            if kind == "image"
+            and ext in (
+                "jpg",
+                "jpeg"
+            )
+            else
+            (
+                f"image/{ext}"
+                if kind == "image"
+                else
+                f"video/"
+                f"{'mp4' if ext == 'mov' else ext}"
+            )
+        )
+
+        encoded = (
+            base64.b64encode(
+                data
+            ).decode(
+                "ascii"
+            )
+        )
+
+        chat_attachments.append({
+            "name":
+                name,
+
+            "path":
+                f"data:{mime};base64,{encoded}",
+
+            "kind":
+                kind,
+
+            "size":
+                len(data)
+        })
+
+
+def chat_send_message(_=None):
+
+    process_chat_uploads()
+
+    message = chat_input.value.strip()
+
+    if (
+        not message
+        and not chat_attachments
+    ):
+        return
+
+    if not message:
+
+        message = (
+            "Please look at the media I uploaded."
+        )
+
+    attachments = list(
+        chat_attachments
+    )
+
+    chat_history.append(
+        (
+            "You",
+            message,
+            attachments
+        )
+    )
+
+    chat_attachments.clear()
+
+    chat_upload.value = ()
+
+    chat_input.value = ""
+
+    refresh_chat()
+
+    set_status(
+        "ISIFEL THINKING...",
+        PURPLE
+    )
+
+    response = generate_isifel_response(
+        message
+    )
+
+    chat_history.append(
+        (
+            "Isifel",
+            response,
+            []
+        )
+    )
+
+    refresh_chat()
+
+    set_status(
+        "ISIFEL READY",
+        GREEN
+    )
+
+
+chat_send.on_click(
+    chat_send_message
+)
+
+
+# ============================================================
+# CLEAR CHAT
+# ============================================================
+
+def clear_chat(_=None):
+
+    chat_history.clear()
+
+    chat_attachments.clear()
+
+    chat_upload.value = ()
+
+    refresh_chat()
+
+    set_status(
+        "CHAT CLEARED",
+        GREEN
+    )
+
+
+chat_clear.on_click(
+    clear_chat
+)
+
+
+# ============================================================
+# VIDEO SETTINGS
+# ============================================================
+
+video_duration = widgets.IntSlider(
+    value=6,
+    min=6,
+    max=6,
+    step=1,
+    description="Seconds",
+    disabled=True
+)
+
+video_fps = widgets.IntSlider(
+    value=8,
+    min=8,
+    max=8,
+    step=1,
+    description="FPS",
+    disabled=True
+)
+
+video_steps = widgets.IntSlider(
+    value=30,
+    min=10,
+    max=50,
+    step=5,
+    description="Steps",
+    continuous_update=False
+)
+
+video_guidance = widgets.FloatSlider(
+    value=6.0,
+    min=1,
+    max=10,
+    step=.5,
+    description="Guidance",
+    continuous_update=False
+)
+
+video_seed = widgets.IntText(
+    value=-1,
+    description="Seed"
+)
+
+video_button = widgets.Button(
+    description="🎬 Create AI Video",
+    layout=widgets.Layout(
+        width="240px",
+        height="50px"
+    )
+)
+
+
+# ============================================================
+# VIDEO GENERATION
+# ============================================================
+
+def create_video(_=None):
+
+    global current_video
+    global current_image
+
+    if current_image is None:
+
+        set_status(
+            "GENERATE AN IMAGE FIRST",
+            RED
+        )
+
+        with video_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "Generate an image in the Create tab first."
+            )
+
+        return
+
+    if device != "cuda":
+
+        set_status(
+            "CUDA GPU REQUIRED",
+            RED
+        )
+
+        return
+
+    base = current_image.convert(
+        "RGB"
+    )
+
+    target_width = 576
+    target_height = 320
+
+    base.thumbnail(
+        (
+            target_width,
+            target_height
+        ),
+        Image.Resampling.LANCZOS
+    )
+
+    canvas = Image.new(
+        "RGB",
+        (
+            target_width,
+            target_height
+        ),
+        "black"
+    )
+
+    canvas.paste(
+        base,
+        (
+            (target_width-base.width)//2,
+            (target_height-base.height)//2
+        )
+    )
+
+    base = canvas
+
+    if svd_pipe is None:
+
+        set_status(
+            "LOADING SMALL VIDEO AI...",
+            ORANGE
+        )
+
+        with video_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    """
+                    <h3>🎬 Loading smaller Isifel Video AI...</h3>
+                    <p style='color:#8b95a5;'>
+                    This replaces CogVideoX-5B and does not require
+                    a Hugging Face login.
+                    </p>
+                    """
+                )
+            )
+
+        if not load_video_model():
+            return
+
+    set_status(
+        "GENERATING AI VIDEO...",
+        ORANGE
+    )
+
+    with video_output:
+
+        clear_output(
+            wait=True
+        )
+
+        display(
+            HTML(
+                """
+                <h3>🎬 Generating Isifel Video...</h3>
+                <p style='color:#8b95a5;'>
+                Using the smaller local image-to-video model.
+                </p>
+                """
+            )
+        )
+
+    if video_seed.value < 0:
+
+        used_seed = random.randint(
+            0,
+            999999999
+        )
+
+    else:
+
+        used_seed = video_seed.value
+
+    generator = torch.Generator(
+        device="cuda"
+    ).manual_seed(
+        used_seed
+    )
+
+    try:
+
+        result = svd_pipe(
+            image=base,
+            num_frames=14,
+            num_inference_steps=min(
+                video_steps.value,
+                25
+            ),
+            decode_chunk_size=2,
+            fps=7,
+            motion_bucket_id=127,
+            noise_aug_strength=0.02,
+            generator=generator
+        )
+
+        frames = result.frames[0]
+
+        filename = (
+            "/content/isifel_video_"
+            + datetime.now().strftime(
+                "%H%M%S"
+            )
+            + ".mp4"
+        )
+
+        export_to_video(
+            frames,
+            filename,
+            fps=7
+        )
+
+        if (
+            not os.path.exists(filename)
+            or os.path.getsize(filename) < 1000
+        ):
+
+            raise RuntimeError(
+                "Video file was not created correctly."
+            )
+
+        current_video = filename
+
+        with video_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    "<h3>🎬 Isifel Video</h3>"
+                )
+            )
+
+            display(
+                Video(
+                    filename,
+                    embed=True,
+                    width=700
+                )
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <p style='color:#8b95a5;'>
+                    ✅ Video created successfully.
+                    </p>
+
+                    <p style='color:#8b95a5;'>
+                    Seed: {used_seed}
+                    </p>
+
+                    <p style='color:#8b95a5;'>
+                    Model: Smaller Stable Video Diffusion
+                    </p>
+                    """
+                )
+            )
+
+        set_status(
+            "VIDEO READY",
+            GREEN
+        )
+
+    except torch.cuda.OutOfMemoryError:
+
+        set_status(
+            "VIDEO NEEDS MORE VRAM",
+            RED
+        )
+
+        with video_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "❌ CUDA OUT OF MEMORY — "
+                "try fewer steps or restart the Colab runtime."
+            )
+
+        try:
+            torch.cuda.empty_cache()
+        except:
+            pass
+
+    except Exception as e:
+
+        set_status(
+            "VIDEO ERROR",
+            RED
+        )
+
+        with video_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "❌ Video generation error:"
+            )
+
+            print(e)
+
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+history_output = widgets.Output()
+
+
+def show_history():
+
+    with history_output:
+
+        clear_output()
+
+        if not history:
+
+            print(
+                "No generations yet."
+            )
+
+            return
+
+        for item in reversed(
+            history
+        ):
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                    color:#8b95a5;
+                    margin-top:15px;
+                    ">
+                    🕒 {html.escape(item['time'])}
+                    &nbsp; • &nbsp;
+                    🌱 Seed {item['seed']}
+                    </div>
+
+                    <div style="
+                    color:#f1f5f9;
+                    padding:8px 0;
+                    ">
+                    {html.escape(item['prompt'])}
+                    </div>
+                    """
+                )
+            )
+
+            display(
+                item["image"]
+            )
+
+
+# ============================================================
+# API KEY MANAGER
+# ============================================================
+
+provider = widgets.Dropdown(
+    options=[
+        "OpenAI",
+        "Anthropic",
+        "Google",
+        "Hugging Face",
+        "Other"
+    ],
+    description="Provider"
+)
+
+key_name = widgets.Text(
+    placeholder="Example: My Image API",
+    description="Name"
+)
+
+api_key = widgets.Password(
+    placeholder="Paste API key here",
+    description="Key"
+)
+
+save_key_button = widgets.Button(
+    description="🔐 Save Key"
+)
+
+delete_key_button = widgets.Button(
+    description="🗑 Delete Key"
+)
+
+keys_output = widgets.Output()
+
+
+def save_key(_=None):
+
+    name = key_name.value.strip()
+
+    key = api_key.value.strip()
+
+    if not name or not key:
+
+        with keys_output:
+
+            clear_output()
+
+            print(
+                "Enter a name and API key."
+            )
+
+        return
+
+    saved_keys[name] = {
+        "provider":
+            provider.value,
+
+        "key":
+            key
+    }
+
+    with keys_output:
+
+        clear_output()
+
+        print(
+            f"Saved '{name}' for this runtime."
+        )
+
+        print(
+            "The key is not written into the Python source."
+        )
+
+    api_key.value = ""
+
+
+def delete_key(_=None):
+
+    name = key_name.value.strip()
+
+    if name in saved_keys:
+
+        del saved_keys[name]
+
+        with keys_output:
+
+            clear_output()
+
+            print(
+                f"Deleted '{name}'."
+            )
+
+    else:
+
+        with keys_output:
+
+            clear_output()
+
+            print(
+                "No saved key with that name."
+            )
+
+
+save_key_button.on_click(
+    save_key
+)
+
+delete_key_button.on_click(
+    delete_key
+)
+
+
+# ============================================================
+# 🧠 AI TRAINING / IMPROVEMENT LAB
+# ============================================================
+#
+# THIS IS THE REPLACEMENT FOR THE OLD TRAINING SYSTEM.
+#
+# Training key:
+#
+#       29651
+#
+# The trainer:
+#
+# 1. Unlocks with 29651
+# 2. Accepts a .py upload
+# 3. Accepts improvement instructions
+# 4. Sends the source + instructions to a coding model
+# 5. Receives a COMPLETE improved Python file
+# 6. Checks Python syntax
+# 7. Checks important Isifel components
+# 8. Creates a backup
+# 9. Creates a NEW version
+# 10. Never overwrites the original
+#
+# ============================================================
+
+training_unlocked = False
+
+training_last_file = None
+
+training_backup_file = None
+
+training_uploaded_source = None
+
+training_version_history = []
+
+
+# ============================================================
+# TRAINING KEY
+# ============================================================
+
+training_key = widgets.Password(
+    placeholder="Enter training key: 29651",
+    description="Key",
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+training_unlock_button = widgets.Button(
+    description="🔓 Unlock Training",
+    layout=widgets.Layout(
+        width="210px",
+        height="42px"
+    )
+)
+
+
+# ============================================================
+# TRAINING AI KEY
+# ============================================================
+
+training_openai_key = widgets.Password(
+    placeholder="Paste OpenAI API key here",
+    description="AI Key",
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+
+# ============================================================
+# TRAINING MODEL
+# ============================================================
+
+training_model = widgets.Text(
+    value=TRAINING_AI_MODEL,
+    description="AI Model",
+    placeholder="Example: gpt-5",
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+
+# ============================================================
+# TRAINING GOALS
+# ============================================================
+
+training_goals = widgets.Textarea(
+    placeholder=(
+        "Example:\n"
+        "Make Isifel better at Roblox coding.\n"
+        "Make Isifel explain exactly where scripts go.\n"
+        "Improve error handling.\n"
+        "Make the interface easier to use.\n"
+        "Do not remove existing features."
+    ),
+    description="Goals",
+    layout=widgets.Layout(
+        width="100%",
+        height="140px"
+    )
+)
+
+
+# ============================================================
+# TRAINING EXAMPLES
+# ============================================================
+
+training_examples = widgets.Textarea(
+    placeholder=(
+        "Optional examples of how Isifel should behave.\n\n"
+        "Example:\n"
+        "User: How do I fix this Roblox error?\n"
+        "Isifel: Explain the exact Roblox Studio location, "
+        "then give corrected ready-to-paste code."
+    ),
+    description="Examples",
+    layout=widgets.Layout(
+        width="100%",
+        height="140px"
+    )
+)
+
+
+# ============================================================
+# TRAINING RULES
+# ============================================================
+
+training_instruction = widgets.Textarea(
+    value=(
+        "Preserve existing functionality unless the user "
+        "explicitly asks to remove it. Make improvements "
+        "carefully. Keep Google Colab compatibility. "
+        "Do not invent APIs or dependencies. "
+        "When giving code, make it ready to paste."
+    ),
+    description="Rules",
+    layout=widgets.Layout(
+        width="100%",
+        height="120px"
+    )
+)
+
+
+# ============================================================
+# SOURCE UPLOAD
+# ============================================================
+
+training_source_upload = widgets.FileUpload(
+    accept=".py",
+    multiple=False,
+    description="📂 Upload Isifel .py",
+    layout=widgets.Layout(
+        width="210px",
+        height="42px"
+    )
+)
+
+
+training_source_status = widgets.HTML(
+    value=(
+        f"""
+        <span style="color:{MUTED};">
+        No source file uploaded.
+        </span>
+        """
+    )
+)
+
+
+# ============================================================
+# OPTIONAL SOURCE PATH
+# ============================================================
+
+training_source = widgets.Text(
+    value="",
+    description="Path",
+    placeholder="Optional: /content/Isifel.py",
+    layout=widgets.Layout(
+        width="100%"
+    )
+)
+
+
+# ============================================================
+# SAVE PROFILE
+# ============================================================
+
+training_save_memory = widgets.Checkbox(
+    value=True,
+    description="Save training profile"
+)
+
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
+training_output = widgets.Output(
+    layout=widgets.Layout(
+        width="100%",
+        border=f"1px solid {BORDER}",
+        padding="12px",
+        max_height="500px",
+        overflow="auto"
+    )
+)
+
+
+# ============================================================
+# BUTTONS
+# ============================================================
+
+training_generate_button = widgets.Button(
+    description="🧠 AI Train + Improve",
+    button_style="success",
+    disabled=True,
+    layout=widgets.Layout(
+        width="250px",
+        height="48px"
+    )
+)
+
+training_download_button = widgets.Button(
+    description="⬇️ Download New Version",
+    disabled=True,
+    layout=widgets.Layout(
+        width="240px",
+        height="42px"
+    )
+)
+
+training_backup_button = widgets.Button(
+    description="💾 Download Backup",
+    disabled=True,
+    layout=widgets.Layout(
+        width="200px",
+        height="42px"
+    )
+)
+
+
+# ============================================================
+# TRAINING PROFILE
+# ============================================================
+
+def _training_profile():
+
+    goals = training_goals.value.strip()
+
+    examples = training_examples.value.strip()
+
+    behavior = training_instruction.value.strip()
+
+    parts = []
+
+    if goals:
+
+        parts.append(
+            "TRAINING GOALS:\n"
+            + goals
+        )
+
+    if behavior:
+
+        parts.append(
+            "BEHAVIOR RULES:\n"
+            + behavior
+        )
+
+    if examples:
+
+        parts.append(
+            "RESPONSE EXAMPLES:\n"
+            + examples
+        )
+
+    return "\n\n".join(
+        parts
+    ).strip()
+
+
+# ============================================================
+# SOURCE GETTER
+# ============================================================
+
+def get_training_source():
+
+    if training_uploaded_source:
+
+        return (
+            training_uploaded_source["source"],
+            training_uploaded_source["path"]
+        )
+
+    source_path = training_source.value.strip()
+
+    if source_path:
+
+        if not os.path.isfile(source_path):
+
+            return (
+                None,
+                source_path
+            )
+
+        source = Path(
+            source_path
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        return (
+            source,
+            source_path
+        )
+
+    return (
+        None,
+        None
+    )
+
+
+# ============================================================
+# SOURCE UPLOAD HANDLER
+# ============================================================
+
+def training_upload_changed(change=None):
+
+    global training_uploaded_source
+
+    try:
+
+        values = training_source_upload.value
+
+        if not values:
+
+            return
+
+        if isinstance(
+            values,
+            dict
+        ):
+
+            values = list(
+                values.values()
+            )
+
+        item = values[0]
+
+        filename = item.get(
+            "name",
+            "Isifel.py"
+        )
+
+        data = item.get(
+            "content",
+            b""
+        )
+
+        if not data:
+
+            training_source_status.value = (
+                f"""
+                <span style="color:{RED};">
+                ❌ Uploaded file was empty.
+                </span>
+                """
+            )
+
+            return
+
+        upload_dir = (
+            "/content/isifel_training_source"
+        )
+
+        os.makedirs(
+            upload_dir,
+            exist_ok=True
+        )
+
+        path = os.path.join(
+            upload_dir,
+            filename
+        )
+
+        with open(
+            path,
+            "wb"
+        ) as f:
+
+            f.write(data)
+
+        source = data.decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        training_uploaded_source = {
+            "name":
+                filename,
+
+            "path":
+                path,
+
+            "source":
+                source
+        }
+
+        training_source.value = path
+
+        training_source_status.value = (
+            f"""
+            <span style="color:{GREEN};">
+            ✅ Loaded <b>
+            {html.escape(filename)}
+            </b>
+            — {len(source):,} characters
+            </span>
+            """
+        )
+
+        training_generate_button.disabled = (
+            not training_unlocked
+        )
+
+    except Exception as e:
+
+        training_uploaded_source = None
+
+        training_source_status.value = (
+            f"""
+            <span style="color:{RED};">
+            ❌ Upload error:
+            {html.escape(str(e))}
+            </span>
+            """
+        )
+
+
+training_source_upload.observe(
+    training_upload_changed,
+    names="value"
+)
+
+
+# ============================================================
+# UNLOCK TRAINING
+# ============================================================
+
+def training_unlock(_=None):
+
+    global training_unlocked
+
+    supplied = (
+        training_key.value.strip()
+    )
+
+    if supplied == TRAINING_ACCESS_KEY:
+
+        training_unlocked = True
+
+        training_key.value = ""
+
+        training_generate_button.disabled = False
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                        color:{GREEN};
+                        font-size:17px;
+                        font-weight:bold;
+                    ">
+                        ✅ TRAINING UNLOCKED
+                    </div>
+
+                    <div style="
+                        color:{MUTED};
+                        margin-top:8px;
+                    ">
+                        Upload your current Isifel .py file,
+                        enter your AI API key, describe the
+                        improvements you want, and press
+                        <b>🧠 AI Train + Improve</b>.
+                    </div>
+                    """
+                )
+            )
+
+    else:
+
+        training_unlocked = False
+
+        training_generate_button.disabled = True
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                        color:{RED};
+                        font-size:15px;
+                    ">
+                        ❌ Incorrect training key.
+                    </div>
+                    """
+                )
+            )
+
+
+# ============================================================
+# PYTHON VALIDATION
+# ============================================================
+
+def validate_python_source(source):
+
+    try:
+
+        # Google Colab allows shell commands beginning with !.
+        # Python's compile() does not understand those commands.
+        # Remove those lines ONLY for syntax validation.
+        validation_source = re.sub(
+            r"(?m)^[ \t]*!.*(?:\n|$)",
+            "",
+            source
+        )
+
+        compile(
+            validation_source,
+            "<generated_isifel>",
+            "exec"
+        )
+
+        return (
+            True,
+            "Python/Colab syntax check passed."
+        )
+
+    except SyntaxError as e:
+
+        return (
+            False,
+            (
+                f"Syntax error on line "
+                f"{e.lineno}: {e.msg}"
+            )
+        )
+
+    except Exception as e:
+
+        return (
+            False,
+            str(e)
+        )
+
+# ============================================================
+# VERSION CALCULATOR
+# ============================================================
+
+def next_training_version():
+
+    current = TRAINING_VERSION
+
+    try:
+
+        parts = current.split(".")
+
+        major = int(
+            parts[0]
+        )
+
+        minor = int(
+            parts[1]
+        )
+
+        minor += 1
+
+        return (
+            f"{major}.{minor}"
+        )
+
+    except:
+
+        return "1.1"
+
+
+# ============================================================
+# CLEAN GENERATED PYTHON
+# ============================================================
+
+def clean_generated_python(text):
+
+    text = text.strip()
+
+    if text.startswith("```"):
+
+        text = re.sub(
+            r"^```(?:python|py)?\s*",
+            "",
+            text,
+            flags=re.IGNORECASE
+        )
+
+        text = re.sub(
+            r"\s*```$",
+            "",
+            text
+        )
+
+    return text.strip()
+
+
+# ============================================================
+# CHECK IMPORTANT ISIFEL FEATURES
+# ============================================================
+
+def check_isifel_features(source):
+
+    required_strings = [
+
+        "APP_NAME",
+
+        "StableDiffusionPipeline",
+
+        "generate_image",
+
+        "generate_isifel_response",
+
+        "chat_page",
+
+        "video_page",
+
+        "training_page",
+
+        "TRAINING_ACCESS_KEY",
+
+        "29651"
+
+    ]
+
+    missing = []
+
+    for item in required_strings:
+
+        if item not in source:
+
+            missing.append(
+                item
+            )
+
+    return missing
+
+
+# ============================================================
+# OPENAI AI CODE TRAINER
+# ============================================================
+
+def ask_external_training_ai(
+    source,
+    profile,
+    model_name
+):
+
+    if not OPENAI_AVAILABLE:
+
+        raise RuntimeError(
+            "The OpenAI Python package is unavailable. "
+            "Restart the Colab runtime after installation."
+        )
+
+    api_key_value = (
+        training_openai_key.value.strip()
+    )
+
+    if not api_key_value:
+
+        raise RuntimeError(
+            "Enter an OpenAI API key first."
+        )
+
+    if not model_name.strip():
+
+        raise RuntimeError(
+            "Enter an AI model name."
+        )
+
+    try:
+
+        client = OpenAI(
+            api_key=api_key_value
+        )
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"Could not initialize OpenAI client: {e}"
+        )
+
+
+    # --------------------------------------------------------
+    # SYSTEM INSTRUCTIONS
+    # --------------------------------------------------------
+
+    system_prompt = """
+You are the code-improvement engine for a Python application
+called Isifel.
+
+Your job is to improve the supplied Isifel Python source code.
+
+IMPORTANT RULES:
+
+1. Return ONLY COMPLETE Python SOURCE CODE.
+2. Do NOT return Markdown.
+3. Do NOT return explanations.
+4. Do NOT return a patch.
+5. Do NOT return only changed functions.
+6. Return the ENTIRE Python file.
+7. Preserve existing working features.
+8. Do not delete major features merely to simplify the code.
+9. Keep Google Colab compatibility.
+10. Keep ipywidgets compatibility.
+11. Keep the Isifel application self-contained.
+12. Do not invent package names.
+13. Do not invent APIs.
+14. Do not insert fake API keys.
+15. Never hard-code an API key into the generated source.
+16. Preserve the Training Lab.
+17. Preserve the training access key.
+18. Preserve image generation.
+19. Preserve chat.
+20. Preserve video generation.
+21. Preserve API key management.
+22. Preserve navigation.
+23. Preserve Settings.
+24. Preserve History.
+25. Improve error handling when useful.
+26. Improve readability when useful.
+27. Do not replace working implementations with pseudocode.
+28. Do not intentionally break dependencies.
+29. Do not remove functionality unless requested.
+30. The result must be executable Python.
+"""
+
+    user_prompt = f"""
+CURRENT ISIFEL SOURCE:
+
+================ SOURCE START ================
+
+{source}
+
+================ SOURCE END ==================
+
+
+REQUESTED TRAINING / IMPROVEMENTS:
+
+{profile}
+
+
+Create the COMPLETE improved Isifel Python file.
+
+Apply the requested improvements directly to the code.
+
+Preserve all existing major features.
+
+Return ONLY the complete Python source code.
+"""
+
+    try:
+
+        response = client.responses.create(
+            model=model_name.strip(),
+            instructions=system_prompt,
+            input=user_prompt
+        )
+
+        result = response.output_text
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"AI training request failed:\n{e}"
+        )
+
+    result = clean_generated_python(
+        result
+    )
+
+    if not result:
+
+        raise RuntimeError(
+            "The training AI returned empty code."
+        )
+
+    return result
+
+
+# ============================================================
+# CREATE TRAINED VERSION
+# ============================================================
+
+def generate_trained_version(_=None):
+
+    global TRAINING_PROFILE_TEXT
+    global TRAINING_VERSION
+    global training_last_file
+    global training_backup_file
+
+    # --------------------------------------------------------
+    # ACCESS
+    # --------------------------------------------------------
+
+    if not training_unlocked:
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "❌ Unlock Training first."
+            )
+
+        return
+
+
+    # --------------------------------------------------------
+    # PROFILE
+    # --------------------------------------------------------
+
+    profile = _training_profile()
+
+    if not profile:
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "⚠️ Add at least one training goal."
+            )
+
+        return
+
+
+    # --------------------------------------------------------
+    # SOURCE
+    # --------------------------------------------------------
+
+    try:
+
+        source, source_path = (
+            get_training_source()
+        )
+
+    except Exception as e:
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "❌ Could not read source:"
+            )
+
+            print(e)
+
+        return
+
+
+    if not source:
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                        color:{RED};
+                        font-size:16px;
+                    ">
+                        ❌ No Isifel source file selected.
+                    </div>
+
+                    <div style="
+                        color:{MUTED};
+                        margin-top:8px;
+                    ">
+                        Click <b>📂 Upload Isifel .py</b>
+                        and select your current Python file.
+                    </div>
+                    """
+                )
+            )
+
+        return
+
+
+    # --------------------------------------------------------
+    # ORIGINAL VALIDATION
+    # --------------------------------------------------------
+
+    original_valid, original_message = (
+        validate_python_source(
+            source
+        )
+    )
+
+    if not original_valid:
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            print(
+                "❌ Your original Isifel source has "
+                "a Python syntax error."
+            )
+
+            print()
+
+            print(
+                original_message
+            )
+
+        return
+
+
+    # --------------------------------------------------------
+    # UI
+    # --------------------------------------------------------
+
+    training_generate_button.disabled = True
+
+    training_download_button.disabled = True
+
+    training_backup_button.disabled = True
+
+
+    with training_output:
+
+        clear_output(
+            wait=True
+        )
+
+        display(
+            HTML(
+                f"""
+                <div style="
+                    color:{ORANGE};
+                    font-size:18px;
+                    font-weight:bold;
+                ">
+                    🧠 ISIFEL IS TRAINING...
+                </div>
+
+                <div style="
+                    color:{MUTED};
+                    margin-top:8px;
+                ">
+                    The coding model is analyzing your
+                    current source code.
+                </div>
+
+                <div style="
+                    color:{MUTED};
+                    margin-top:6px;
+                ">
+                    It will create a completely new version
+                    instead of overwriting your original.
+                </div>
+
+                <div style="
+                    color:{MUTED};
+                    margin-top:6px;
+                ">
+                    Source size:
+                    {len(source):,} characters
+                </div>
+                """
+            )
+        )
+
+
+    try:
+
+        # ----------------------------------------------------
+        # AI CODE GENERATION
+        # ----------------------------------------------------
+
+        improved_source = ask_external_training_ai(
+            source,
+            profile,
+            training_model.value
+        )
+
+
+        # ----------------------------------------------------
+        # GENERATED PYTHON VALIDATION
+        # ----------------------------------------------------
+
+        valid, validation_message = (
+            validate_python_source(
+                improved_source
+            )
+        )
+
+        if not valid:
+
+            raise RuntimeError(
+                "The AI generated invalid Python.\n\n"
+                + validation_message
+            )
+
+
+        # ----------------------------------------------------
+        # IMPORTANT FEATURE CHECK
+        # ----------------------------------------------------
+
+        missing = check_isifel_features(
+            improved_source
+        )
+
+        if missing:
+
+            raise RuntimeError(
+                "The generated version appears to be missing "
+                "important Isifel components:\n\n"
+                + "\n".join(
+                    "- " + item
+                    for item in missing
+                )
+                + "\n\n"
+                "The generated version was NOT saved."
+            )
+
+
+        # ----------------------------------------------------
+        # VERSION
+        # ----------------------------------------------------
+
+        new_version = (
+            next_training_version()
+        )
+
+        TRAINING_VERSION = (
+            new_version
+        )
+
+        TRAINING_PROFILE_TEXT = (
+            profile
+        )
+
+
+        # ----------------------------------------------------
+        # OUTPUT DIRECTORY
+        # ----------------------------------------------------
+
+        out_dir = (
+            "/content"
+            if os.path.isdir("/content")
+            else "/mnt/data"
+        )
+
+
+        # ----------------------------------------------------
+        # TIMESTAMP
+        # ----------------------------------------------------
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+
+
+        # ----------------------------------------------------
+        # ORIGINAL BACKUP
+        # ----------------------------------------------------
+
+        backup_path = os.path.join(
+            out_dir,
+            (
+                "Isifel_backup_before_"
+                f"v{new_version}_"
+                f"{timestamp}.py"
+            )
+        )
+
+        Path(
+            backup_path
+        ).write_text(
+            source,
+            encoding="utf-8"
+        )
+
+        training_backup_file = (
+            backup_path
+        )
+
+
+        # ----------------------------------------------------
+        # NEW VERSION
+        # ----------------------------------------------------
+
+        output_path = os.path.join(
+            out_dir,
+            (
+                "Isifel_Advanced_Trained_"
+                f"v{new_version}.py"
+            )
+        )
+
+        Path(
+            output_path
+        ).write_text(
+            improved_source,
+            encoding="utf-8"
+        )
+
+        training_last_file = (
+            output_path
+        )
+
+
+        # ----------------------------------------------------
+        # TRAINING PROFILE JSON
+        # ----------------------------------------------------
+
+        profile_path = os.path.join(
+            out_dir,
+            "isifel_training_profile.json"
+        )
+
+        if training_save_memory.value:
+
+            Path(
+                profile_path
+            ).write_text(
+                json.dumps(
+                    {
+                        "application":
+                            APP_NAME,
+
+                        "version":
+                            new_version,
+
+                        "profile":
+                            profile,
+
+                        "model":
+                            training_model.value,
+
+                        "created":
+                            datetime.now().isoformat(
+                                timespec="seconds"
+                            )
+                    },
+                    indent=2
+                ),
+                encoding="utf-8"
+            )
+
+
+        # ----------------------------------------------------
+        # HISTORY
+        # ----------------------------------------------------
+
+        training_version_history.append(
+            {
+                "version":
+                    new_version,
+
+                "file":
+                    output_path,
+
+                "backup":
+                    backup_path,
+
+                "created":
+                    datetime.now().isoformat(
+                        timespec="seconds"
+                    ),
+
+                "model":
+                    training_model.value
+            }
+        )
+
+
+        # ----------------------------------------------------
+        # BUTTONS
+        # ----------------------------------------------------
+
+        training_download_button.disabled = False
+
+        training_backup_button.disabled = False
+
+
+        # ----------------------------------------------------
+        # SUCCESS
+        # ----------------------------------------------------
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                        color:{GREEN};
+                        font-size:19px;
+                        font-weight:bold;
+                    ">
+                        ✅ NEW ISIFEL VERSION CREATED
+                    </div>
+
+                    <div style="
+                        color:{TEXT};
+                        margin-top:14px;
+                    ">
+                        <b>Version:</b>
+                        {html.escape(new_version)}
+                    </div>
+
+                    <div style="
+                        color:{TEXT};
+                        margin-top:6px;
+                    ">
+                        <b>AI model:</b>
+                        {html.escape(
+                            training_model.value
+                        )}
+                    </div>
+
+                    <div style="
+                        color:{TEXT};
+                        margin-top:6px;
+                    ">
+                        <b>New file:</b>
+                        {html.escape(
+                            output_path
+                        )}
+                    </div>
+
+                    <div style="
+                        color:{TEXT};
+                        margin-top:6px;
+                    ">
+                        <b>Backup:</b>
+                        {html.escape(
+                            backup_path
+                        )}
+                    </div>
+
+                    <div style="
+                        color:{GREEN};
+                        margin-top:15px;
+                    ">
+                        ✓ Original Python syntax valid
+                    </div>
+
+                    <div style="
+                        color:{GREEN};
+                    ">
+                        ✓ Generated Python syntax valid
+                    </div>
+
+                    <div style="
+                        color:{GREEN};
+                    ">
+                        ✓ Important Isifel systems detected
+                    </div>
+
+                    <div style="
+                        color:{GREEN};
+                    ">
+                        ✓ Original source preserved
+                    </div>
+
+                    <div style="
+                        color:{MUTED};
+                        margin-top:14px;
+                    ">
+                        Your original file was NOT overwritten.
+                    </div>
+                    """
+                )
+            )
+
+            print()
+
+            print(
+                "TRAINING PROFILE:"
+            )
+
+            print(
+                profile
+            )
+
+            print()
+
+            print(
+                "VALIDATION:"
+            )
+
+            print(
+                validation_message
+            )
+
+
+    except Exception as e:
+
+        training_download_button.disabled = True
+
+        training_backup_button.disabled = True
+
+        with training_output:
+
+            clear_output(
+                wait=True
+            )
+
+            display(
+                HTML(
+                    f"""
+                    <div style="
+                        color:{RED};
+                        font-size:18px;
+                        font-weight:bold;
+                    ">
+                        ❌ TRAINING FAILED
+                    </div>
+                    """
+                )
+            )
+
+            print(
+                str(e)
+            )
+
+            print()
+
+            print(
+                "Your original source file was NOT overwritten."
+            )
+
+
+    finally:
+
+        training_generate_button.disabled = False
+
+
+# ============================================================
+# DOWNLOAD TRAINED VERSION
+# ============================================================
+
+def download_trained_version(_=None):
+
+    if (
+        not training_last_file
+        or not os.path.exists(
+            training_last_file
+        )
+    ):
+
+        with training_output:
+
+            print(
+                "❌ Create a trained version first."
+            )
+
+        return
+
+    try:
+
+        from google.colab import files as colab_files
+
+        colab_files.download(
+            training_last_file
+        )
+
+    except Exception:
+
+        with training_output:
+
+            print(
+                "ℹ️ New version available at:"
+            )
+
+            print(
+                training_last_file
+            )
+
+
+# ============================================================
+# DOWNLOAD BACKUP
+# ============================================================
+
+def download_training_backup(_=None):
+
+    if (
+        not training_backup_file
+        or not os.path.exists(
+            training_backup_file
+        )
+    ):
+
+        with training_output:
+
+            print(
+                "❌ No backup exists yet."
+            )
+
+        return
+
+    try:
+
+        from google.colab import files as colab_files
+
+        colab_files.download(
+            training_backup_file
+        )
+
+    except Exception:
+
+        with training_output:
+
+            print(
+                "ℹ️ Backup available at:"
+            )
+
+            print(
+                training_backup_file
+            )
+
+
+# ============================================================
+# TRAINING BUTTON EVENTS
+# ============================================================
+
+training_unlock_button.on_click(
+    training_unlock
+)
+
+training_generate_button.on_click(
+    generate_trained_version
+)
+
+training_download_button.on_click(
+    download_trained_version
+)
+
+training_backup_button.on_click(
+    download_training_backup
+)
+
+
+# ============================================================
+# 🧠 TRAINING PAGE
+# ============================================================
+
+training_page = widgets.VBox([
+
+    widgets.HTML(
+        f"""
+        <h2>🧠 AI Training Lab</h2>
+
+        <p style="color:{MUTED};">
+        Train and improve Isifel by giving the coding AI
+        instructions about how you want the application to
+        change.
+        </p>
+
+        <div style="
+            background:{PANEL2};
+            border:1px solid {BORDER};
+            border-radius:12px;
+            padding:14px;
+            margin-bottom:14px;
+        ">
+
+            <b>🔐 STEP 1 — Unlock Training</b>
+
+            <br><br>
+
+            <span style="color:{MUTED};">
+            Enter training key <b>29651</b>.
+            </span>
+
+        </div>
+        """
+    ),
+
+    training_key,
+
+    training_unlock_button,
+
+    widgets.HTML(
+        "<div style='height:12px'></div>"
+    ),
+
+    widgets.HTML(
+        f"""
+        <div style="
+            background:{PANEL2};
+            border:1px solid {BORDER};
+            border-radius:12px;
+            padding:14px;
+            margin-bottom:14px;
+        ">
+
+            <b>📂 STEP 2 — Upload Current Isifel</b>
+
+            <br><br>
+
+            <span style="color:{MUTED};">
+            Upload the .py file you want Isifel to improve.
+            You do NOT need to type the filename manually.
+            </span>
+
+        </div>
+        """
+    ),
+
+    training_source_upload,
+
+    training_source_status,
+
+    training_source,
+
+    widgets.HTML(
+        "<div style='height:12px'></div>"
+    ),
+
+    widgets.HTML(
+        f"""
+        <div style="
+            background:{PANEL2};
+            border:1px solid {BORDER};
+            border-radius:12px;
+            padding:14px;
+            margin-bottom:14px;
+        ">
+
+            <b>🤖 STEP 3 — AI Improvement</b>
+
+            <br><br>
+
+            <span style="color:{MUTED};">
+            Tell the coding AI exactly what you want changed.
+            </span>
+
+        </div>
+        """
+    ),
+
+    training_openai_key,
+
+    training_model,
+
+    training_goals,
+
+    training_instruction,
+
+    training_examples,
+
+    training_save_memory,
+
+    widgets.HTML(
+        "<div style='height:10px'></div>"
+    ),
+
+    widgets.HBox([
+        training_generate_button,
+        training_download_button,
+        training_backup_button
+    ]),
+
+    widgets.HTML(
+        f"""
+        <div style="
+            color:{MUTED};
+            font-size:12px;
+            margin-top:10px;
+            margin-bottom:10px;
+        ">
+            🔒 The AI key is only held in this Colab runtime's
+            widget state. It is NOT inserted into the generated
+            Isifel source code.
+        </div>
+        """
+    ),
+
+    training_output
+
+])
+
+
+# ============================================================
+# SETTINGS PAGE
+# ============================================================
+
+settings_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>⚙️ Settings</h2>
+
+        <p style="color:#8b95a5;">
+        Configure Isifel.
+        </p>
+        """
+    ),
+
+    widgets.HTML(
+        "<h3>Connect-the-Dots</h3>"
+    ),
+
+    point_count,
+    sentence_length,
+    line_width,
+    point_size,
+    show_numbers,
+    show_grid,
+
+    widgets.HTML(
+        "<h3>AI Image</h3>"
+    ),
+
+    style,
+    steps,
+    guidance,
+    resolution,
+    seed_box,
+    negative_prompt,
+
+    widgets.HTML(
+        "<h3>🎬 Video</h3>"
+    ),
+
+    video_steps,
+    video_guidance,
+    video_seed
+
+])
+
+
+# ============================================================
+# CREATE PAGE
+# ============================================================
+
+create_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>🎨 Create</h2>
+
+        <p style="color:#8b95a5;">
+        Turn random patterns into AI artwork.
+        </p>
+        """
+    ),
+
+    prompt,
+
+    widgets.HBox([
+        new_button,
+        image_button
+    ]),
+
+    everything_button,
+
+    widgets.HTML(
+        "<h3>🔢 Connect-the-Dots</h3>"
+    ),
+
+    dots_output,
+
+    widgets.HTML(
+        "<h3>✨ Artwork</h3>"
+    ),
+
+    image_output
+
+])
+
+
+# ============================================================
+# CHAT PAGE
+# ============================================================
+
+chat_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>💬 Isifel</h2>
+
+        <p style="color:#8b95a5;">
+        Chat with Isifel, your built-in creative AI assistant.
+        </p>
+        """
+    ),
+
+    widgets.HTML(
+        """
+        <div style="
+            background:#171c24;
+            border:1px solid #292f3a;
+            border-radius:10px;
+            padding:10px;
+            margin-bottom:10px;
+            color:#8b95a5;
+        ">
+
+            🧠 <b style="color:#f1f5f9;">
+            Isifel
+            </b>
+
+            <br>
+
+            Qwen2.5-1.5B-Instruct
+
+            <br>
+
+            <span style="font-size:12px;">
+            Isifel runs inside this Colab runtime.
+            </span>
+
+        </div>
+        """
+    ),
+
+    chat_api_url,
+
+    isifel_model_box,
+
+    chat_display,
+
+    widgets.HBox([
+        chat_input,
+        chat_send
+    ]),
+
+    widgets.HBox([
+        chat_upload,
+        chat_clear
+    ]),
+
+    widgets.HTML(
+        """
+        <p style="
+            color:#8b95a5;
+            font-size:12px;
+        ">
+        📎 Attach images and videos to chat messages.
+        Files stay in this Colab runtime.
+        </p>
+        """
+    )
+
+])
+
+
+# ============================================================
+# VIDEO PAGE
+# ============================================================
+
+video_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>🎬 Video Studio</h2>
+
+        <p style="color:#8b95a5;">
+        Turn your generated artwork into a short AI-generated
+        animated video with a smaller local video model.
+        </p>
+
+        <div style="
+            background:#171c24;
+            border:1px solid #292f3a;
+            border-radius:10px;
+            padding:12px;
+            margin-bottom:15px;
+        ">
+
+            <b>ℹ️ Video model</b>
+
+            <br><br>
+
+            Smaller Stable Video Diffusion
+
+            <br>
+
+            <span style="color:#8b95a5;">
+            Loaded only when you press Create AI Video.
+            </span>
+
+            <br><br>
+
+            <span style="color:#8b95a5;">
+            No Hugging Face login is required.
+            </span>
+
+        </div>
+        """
+    ),
+
+    video_duration,
+    video_fps,
+    video_steps,
+    video_guidance,
+    video_seed,
+
+    video_button,
+
+    video_output
+
+])
+
+
+# ============================================================
+# HISTORY PAGE
+# ============================================================
+
+history_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>📜 Generation History</h2>
+        """
+    ),
+
+    history_output
+
+])
+
+
+# ============================================================
+# API PAGE
+# ============================================================
+
+keys_page = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <h2>🔑 API Keys</h2>
+
+        <p style="color:#8b95a5;">
+        Keys are kept in memory for this Colab runtime.
+        They are not written into this source code.
+        </p>
+        """
+    ),
+
+    provider,
+    key_name,
+    api_key,
+
+    widgets.HBox([
+        save_key_button,
+        delete_key_button
+    ]),
+
+    keys_output
+
+])
+
+
+# ============================================================
+# PAGE SWITCHER
+# ============================================================
+
+def show_page(page):
+
+    with workspace:
+
+        clear_output(
+            wait=True
+        )
+
+        display(
+            page
+        )
+
+
+def create_click(_):
+
+    show_page(
+        create_page
+    )
+
+
+def chat_click(_):
+
+    show_page(
+        chat_page
+    )
+
+
+def video_click(_):
+
+    show_page(
+        video_page
+    )
+
+
+def history_click(_):
+
+    show_page(
+        history_page
+    )
+
+    show_history()
+
+
+def keys_click(_):
+
+    show_page(
+        keys_page
+    )
+
+
+def settings_click(_):
+
+    show_page(
+        settings_page
+    )
+
+
+def training_click(_):
+
+    show_page(
+        training_page
+    )
+
+
+create_nav.on_click(
+    create_click
+)
+
+chat_nav.on_click(
+    chat_click
+)
+
+video_nav.on_click(
+    video_click
+)
+
+history_nav.on_click(
+    history_click
+)
+
+keys_nav.on_click(
+    keys_click
+)
+
+settings_nav.on_click(
+    settings_click
+)
+
+training_nav.on_click(
+    training_click
+)
+
+video_button.on_click(
+    create_video
+)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+sidebar = widgets.VBox([
+
+    widgets.HTML(
+        """
+        <div style="
+        color:#8b95a5;
+        font-size:11px;
+        letter-spacing:1px;
+        margin-bottom:8px;
+        ">
+        ISIFEL
+        </div>
+        """
+    ),
+
+    create_nav,
+    chat_nav,
+    video_nav,
+    history_nav,
+
+    widgets.HTML(
+        "<div style='height:12px'></div>"
+    ),
+
+    keys_nav,
+    settings_nav,
+    training_nav
+
+], layout=widgets.Layout(
+    width="245px",
+    padding="18px",
+    border=f"1px solid {BORDER}"
+))
+
+
+# ============================================================
+# APP
+# ============================================================
+
+app = widgets.HBox([
+
+    sidebar,
+
+    widgets.VBox([
+
+        status,
+
+        widgets.HTML(
+            "<div style='height:12px'></div>"
+        ),
+
+        workspace
+
+    ], layout=widgets.Layout(
+        width="calc(100% - 275px)",
+        padding="0 0 0 15px"
+    ))
+
+], layout=widgets.Layout(
+    width="100%"
+))
+
+
+# ============================================================
+# START
+# ============================================================
+
+if isifel_model is not None:
+
+    set_status(
+        "ISIFEL READY",
+        GREEN
+    )
+
+elif device == "cuda":
+
+    set_status(
+        "GPU READY • ISIFEL FAILED",
+        ORANGE
+    )
+
+else:
+
+    set_status(
+        "CPU MODE",
+        ORANGE
+    )
+
+
+display(
+    header
+)
+
+display(
+    app
+)
+
+show_page(
+    create_page
+)
+
+show_pattern()
